@@ -28,6 +28,16 @@ is on the list.
 | **LOW** | The same call outside any loop (one-shot setup / final sync). Usually fine; reported for awareness. |
 | **INFO** | Informational (e.g. `.pin_memory()`, a `device=` factory arg). |
 
+## Repo layout
+
+| file | role |
+|---|---|
+| `torch_hostdev_lint.py` | the linter (single file, stdlib only) |
+| `test_torch_hostdev_lint.py` | unittest suite (45 tests) |
+| `naive_hook.py` | the minimal "roll your own" pre-commit rule, for comparison |
+| `benchmark.py` | ruff vs. DIY hook vs. this linter (speed + correctness) |
+| `.pre-commit-hooks.yaml` | drop-in pre-commit hook definition |
+
 ## Quick start
 
 ```console
@@ -120,6 +130,85 @@ Put a marker comment on the call's line:
 total += loss.item()   # hostdev-lint: ignore
 ```
 
+## Pre-commit
+
+This repo ships a [`.pre-commit-hooks.yaml`](.pre-commit-hooks.yaml). After a
+tag is cut:
+
+```yaml
+# .pre-commit-config.yaml
+- repo: https://github.com/ZiluTian/torch-hostdev-lint
+  rev: v1.1.0
+  hooks:
+    - id: torch-hostdev-lint   # args baked in: --fail-on HIGH
+```
+
+or without a tag, via the `repo: local` variant in the file's comment.
+pre-commit passes all staged `.py` files in **one invocation** (batch mode),
+so per-commit cost is a single interpreter start plus the scan — see the
+benchmark below for measured numbers.
+
+## Benchmark: vs. ruff and a DIY pre-commit hook
+
+"Can't I just add a custom rule to ruff?" — **ruff has no plugin API**, so a
+custom ruff rule in the literal sense doesn't exist. The realistic DIY
+alternative is a pre-commit hook running a small Python AST script; this repo
+ships exactly that minimal version as [`naive_hook.py`](naive_hook.py)
+(~80 lines, catches only `.item()/.tolist()/.numpy()/.cpu()` inside loops)
+so the trade-off is measurable, not asserted.
+
+[`benchmark.py`](benchmark.py) runs a three-way comparison — **ruff**
+(broad real-world ruleset `E,F,W,B,S,I,C4,UP,RET,SIM`, `--isolated`),
+**naive_hook**, and **this linter** — across three cost models (in-process,
+batch subprocess = what pre-commit actually does, per-file subprocess):
+
+```console
+$ python3 benchmark.py            # synthetic corpus (200 files, ground truth)
+$ python3 benchmark.py --files 2000
+$ python3 benchmark.py --corpus path/to/pytorch   # any real tree
+$ python3 benchmark.py --json
+```
+
+By default it generates a synthetic corpus in a temp dir with a known ground
+truth (one of every target pattern per file, marked `# T:<CLASS>`, plus
+decoys that must not be flagged) and verifies each participant against it.
+
+Representative run (synthetic, 200 files, Python 3.12, ruff 0.16.6):
+
+| participant | wall | findings | notes |
+|---|---:|---:|---|
+| ruff (batch) | 7 ms | 0 | 0 on ground-truth lines |
+| torch_hostdev_lint (in-proc) | 36 ms | 1200 | full set |
+| torch_hostdev_lint (batch subprocess) | 77 ms | 1200 | pre-commit cost model |
+| torch_hostdev_lint (per-file, cap 50) | 1531 ms | 300 | ~30 ms/file interpreter start-up |
+| naive_hook (batch subprocess) | 39 ms | 200 | HIGH-only |
+
+How to read it:
+
+- **ruff is ~10× faster, and catches none of it.** No built-in rule expresses
+  host↔device sync, and ruff has no plugin API — speed buys you nothing you
+  can't get from a 36 ms in-process scan.
+- **Per-file subprocess start-up (~30 ms/file) is the only regime where the
+  Python implementation costs real money**, and pre-commit does *not* run in
+  that regime (one invocation per commit, all staged files). For whole-repo
+  CI scans, import the module in-process instead of spawning per file.
+- **The DIY hook is faster than this linter (checks less) and covers ~17% of
+  the finding space** — no `.to(device)` direction analysis, no factory
+  `device=` placement, no severity grading, no fix suggestions, no suppression
+  contract.
+
+Real-world scale (measured on a 4,529-file / 58 MiB compiler-toolchain repo,
+pruned of `__pycache__`/`build`/caches; Python 3.12, ruff 0.16.6, median of 3):
+
+| participant | wall | findings |
+|---|---:|---:|
+| ruff (batch) | 956 ms | 95,093 diagnostics, none for this pattern |
+| torch_hostdev_lint (in-proc / batch) | 6.1 / 6.3 s | 1,727 |
+| naive_hook (in-proc / batch) | 4.4 / 4.7 s | 180 (HIGH-only ≈ 10%) |
+
+Unparseable files (including legacy Python 2 sources) are skipped with a
+warning in every mode, matching the documented contract.
+
 ## Tests
 
 Stdlib-only (`unittest`), no dependencies:
@@ -127,7 +216,6 @@ Stdlib-only (`unittest`), no dependencies:
 ```console
 $ python3 test_torch_hostdev_lint.py -v
 ...
-Ran 43 tests in 0.01s
 OK
 ```
 

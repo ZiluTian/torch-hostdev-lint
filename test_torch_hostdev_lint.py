@@ -275,6 +275,34 @@ class VisitorTests(unittest.TestCase):
         self.assertEqual(cm.exception.lineno, 1)
 
 
+class BenchmarkTemplateTests(unittest.TestCase):
+    """The synthetic corpus template is ground truth for benchmark.py;
+    lock its counts so template edits cannot silently skew the benchmark."""
+
+    def test_template_ground_truth_counts(self):
+        import benchmark as bench
+        self.assertEqual(len(bench.TRUTH_PER_FILE), 6)
+        counts = {}
+        for cls, _ in bench.TRUTH_PER_FILE:
+            counts[cls] = counts.get(cls, 0) + 1
+        self.assertEqual(counts, bench.TRUTH_COUNTS)
+        # every truth line actually carries its marker
+        for cls, lineno in bench.TRUTH_PER_FILE:
+            line = bench.TEMPLATE.splitlines()[lineno - 1]
+            self.assertIn(f"# T:{cls}", line)
+
+    def test_template_linter_and_hook_agree_with_truth(self):
+        import benchmark as bench
+        import naive_hook
+        with tempfile.TemporaryDirectory() as tmp:
+            files = bench.generate_corpus(Path(tmp), 2)
+            linter_findings = sum(len(lint.analyze_file(f)) for f in files)
+            hook_findings = sum(len(naive_hook.findings_in_file(f))
+                                for f in files)
+        self.assertEqual(linter_findings, 2 * sum(bench.TRUTH_COUNTS.values()))
+        self.assertEqual(hook_findings, 2 * bench.TRUTH_COUNTS["HIGH"])
+
+
 class DiscoveryTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

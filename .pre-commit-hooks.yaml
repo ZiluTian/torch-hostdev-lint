@@ -1,0 +1,31 @@
+# Drop-in pre-commit hook definition for torch_hostdev_lint.
+#
+# Usage (repo-based, after a tag is cut -- e.g. v1.1.0):
+#
+#   # .pre-commit-config.yaml
+#   - repo: https://github.com/ZiluTian/torch-hostdev-lint
+#     rev: v1.1.0
+#     hooks:
+#       - id: torch-hostdev-lint
+#
+# Or without a tag (local variant, no install step):
+#
+#   - repo: local
+#     hooks:
+#       - id: torch-hostdev-lint
+#         name: torch-hostdev-lint (host<->device sync linter)
+#         entry: python3 /path/to/torch-hostdev-lint/torch_hostdev_lint.py
+#         args: [--fail-on, HIGH]
+#         language: system
+#         types: [python]
+#
+# pre-commit passes the staged .py files in ONE invocation (batch mode);
+# --fail-on HIGH means the hook fails a commit on any per-iteration
+# CPU<->GPU sync. See benchmark.py for the measured cost model.
+
+- id: torch-hostdev-lint
+  name: torch-hostdev-lint (host<->device sync linter)
+  entry: torch_hostdev_lint.py
+  args: [--fail-on, HIGH]
+  language: python
+  types: [python]
